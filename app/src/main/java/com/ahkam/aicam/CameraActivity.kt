@@ -4,11 +4,16 @@ package com.ahkam.aicam
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.graphics.RectF
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.util.Size
 import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
@@ -34,6 +39,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.min
 import kotlin.random.Random
 
+
 class CameraActivity : AppCompatActivity() {
 
     private lateinit var activityCameraBinding: ActivityCameraBinding
@@ -48,6 +54,7 @@ class CameraActivity : AppCompatActivity() {
     private val isFrontFacing get() = lensFacing == CameraSelector.LENS_FACING_FRONT
 
     private var pauseAnalysis = false
+    private var detected = false
     private var imageRotationDegrees: Int = 0
     private val tfImageBuffer = TensorImage(DataType.UINT8)
 
@@ -59,13 +66,19 @@ class CameraActivity : AppCompatActivity() {
             .add(ResizeWithCropOrPadOp(cropSize, cropSize))
             .add(
                 ResizeOp(
-                    300, 300, ResizeOp.ResizeMethod.BILINEAR
+                    300, 300, ResizeOp.ResizeMethod.NEAREST_NEIGHBOR
                 )
             )
             .add(Rot90Op(-imageRotationDegrees / 90))
             .add(NormalizeOp(0f, 1f))
             .build()
     }
+
+//    private val tfInputSize by lazy {
+//        val inputIndex = 0
+//        val inputShape = tflite.getInputTensor(inputIndex).shape()
+//        Size(inputShape[2], inputShape[1]) // Order of axis is: {1, height, width, 3}
+//    }
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,6 +163,7 @@ class CameraActivity : AppCompatActivity() {
                 val category = detectionResult.categoryAsString
                 val locations = outputs.locationAsTensorBuffer.floatArray
 
+
                 // Report only the top prediction
                 reportCardPrediction2(
                     score,
@@ -210,7 +224,7 @@ class CameraActivity : AppCompatActivity() {
 //        )
 
         // Update the text and UI
-        activityCameraBinding.textPrediction.text = category + " " + (score *100).toString()+"%"
+        activityCameraBinding.textPrediction.text = category + " " + (score * 100).toString() + "%"
         (activityCameraBinding.boxPrediction.layoutParams as ViewGroup.MarginLayoutParams).apply {
             topMargin = location.top.toInt()
             leftMargin = location.left.toInt()
@@ -228,8 +242,66 @@ class CameraActivity : AppCompatActivity() {
         activityCameraBinding.boxPrediction.visibility = View.VISIBLE
         activityCameraBinding.textPrediction.visibility = View.VISIBLE
 
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!detected) {
+                try {
+                    captureImage(RectF(locations[1], locations[0], locations[3], locations[2]))
+                }catch (e: Exception){
+                    detected = false
+                    pauseAnalysis = false
+                    Log.d("capture failed", e.message.toString())
+                }
+            }
+        }, 2000)
+
     }
 
+    private fun captureImage(rectF: RectF) {
+        pauseAnalysis = true
+        detected = true
+        val matrix = Matrix().apply {
+            postRotate(imageRotationDegrees.toFloat())
+            if (isFrontFacing) postScale(-1f, 1f)
+        }
+        val uprightImage = Bitmap.createBitmap(
+            bitmapBuffer, 0, 0, bitmapBuffer.width, bitmapBuffer.height, matrix, true
+        )
+
+//        activityCameraBinding.imagePredicted.setImageBitmap(cropBitmap(uprightImage, rectF))
+//        activityCameraBinding.imagePredicted.visibility = View.VISIBLE
+
+        try {
+            //Write file
+            val filename = "bitmap.png"
+            val stream = openFileOutput(filename, MODE_PRIVATE)
+            cropBitmap(uprightImage, rectF).compress(Bitmap.CompressFormat.PNG, 100, stream)
+
+            //Cleanup
+            stream.close()
+
+            //Pop intent
+            val in1 = Intent(this, PreviewActivity::class.java)
+            in1.putExtra("image", filename)
+            startActivity(in1)
+        } catch (e: java.lang.Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun cropBitmap(original: Bitmap, boundingBox: RectF): Bitmap {
+        val left = (boundingBox.left * original.width).toInt()
+        val top = (boundingBox.top * original.height).toInt()
+        val width = ((boundingBox.right - boundingBox.left) * original.width).toInt()
+        val height = ((boundingBox.bottom - boundingBox.top) * original.height).toInt()
+
+        return Bitmap.createBitmap(
+            original,
+            left,
+            top,
+            width,
+            height
+        )
+    }
 
 
     /**
@@ -281,9 +353,21 @@ class CameraActivity : AppCompatActivity() {
         }
     }
 
+    override fun onBackPressed() {
+        if (pauseAnalysis) {
+            pauseAnalysis = false
+            detected = false
+            activityCameraBinding.imagePredicted.visibility = View.GONE
+        } else {
+            super.onBackPressed()
+        }
+
+    }
+
     override fun onResume() {
         super.onResume()
-
+        pauseAnalysis = false
+        detected = false
         // Request permissions each time the app resumes, since they can be revoked at any time
         if (!hasPermissions(this)) {
             ActivityCompat.requestPermissions(

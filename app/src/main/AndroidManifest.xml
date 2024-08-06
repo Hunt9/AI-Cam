@@ -19,9 +19,12 @@
         android:theme="@style/Theme.AICam"
         tools:targetApi="31">
         <activity
-            android:rotationAnimation="seamless"
-            android:name=".CameraActivity"
+            android:name=".PreviewActivity"
             android:exported="false" />
+        <activity
+            android:name=".CameraActivity"
+            android:exported="false"
+            android:rotationAnimation="seamless" />
         <activity
             android:name=".MainActivity"
             android:exported="true">
